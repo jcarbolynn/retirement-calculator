@@ -1,141 +1,141 @@
-#
-# This is a Shiny web application. You can run the application by clicking
-# the 'Run App' button above.
-#
-# Find out more about building applications with Shiny here:
-#
-#    https://shiny.posit.co/
-#
 
-# install.packages("fincal")
-# install.packages("plotly")
 library(shiny)
-library(FinCal)
 library(plotly)
+library(FinCal)
 
-years.w <- 32
-years.r <- 30
-current.income <- 40000
-income.replacement <- 1
-current.savings <- 200000
-
-income.in.retirement <- (current.income * (1.025 ^ years.w) * income.replacement)
-retirement.requirement <- pv(r = .04, n = years.r, pmt = income.in.retirement, type = 1)
-monthly.savings <- pmt(r = .07/12, n = (years.w*12), pv = current.savings, fv = retirement.requirement, type = 1)
-savings <- list(monthly.savings, -retirement.requirement)
-
-# Define UI for application that draws a histogram
 ui <- fluidPage(
-
-    # Application title
-    titlePanel("Retirement Calculator"),
-
-    # Sidebar with a slider input for number of bins 
-    sidebarLayout(
-        sidebarPanel(
-            numericInput("current_age", "Current Age: ", value = 30, min = 18, max = 100),
-            numericInput("retire_age", "Retirement Age: ", value = 65, min = 40, max = 100),
-            numericInput("life_exp", "Life Expectancy: ", value = 90, min = 60, max = 110),
-            
-            hr(),
-            
-            numericInput("current_savings", "Current Savings ($): ", value = 20000),
-            numericInput("monthly_savings", "Monthly Contribution ($): ", value = 500),
-            numericInput("return_rate", "Expected Annual Return (%): ", value = 6),
-            
-            hr(),
-            
-            numericInput("retirement_income", "Desired Annual Retirement Income ($): ", value = 60000)
-        ),
-
-        # Show a plot of the generated distribution
-        mainPanel(
-           h3("Results"),
-           verbatimTextOutput("summary"),
-           plotlyOutput("savingsPlot")
-        )
+  titlePanel("Retirement Calculator (Correct FinCal Version)"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      numericInput("current_age", "Current Age:", 30),
+      numericInput("retire_age", "Retirement Age:", 65),
+      numericInput("life_exp", "Life Expectancy:", 90),
+      
+      hr(),
+      
+      numericInput("current_savings", "Current Savings ($):", 20000),
+      numericInput("monthly_savings", "Monthly Contribution ($):", 500),
+      numericInput("return_rate", "Expected Annual Return (%):", 6),
+      
+      hr(),
+      
+      numericInput("retirement_income", "Desired Annual Retirement Income ($):", 60000)
+    ),
+    
+    mainPanel(
+      h3("Results"),
+      verbatimTextOutput("summary"),
+      plotlyOutput("savingsPlot")
     )
+  )
 )
 
-# Define server logic required to draw a histogram
 server <- function(input, output) {
-
-    calcProjection <- reactive({
-      years_to_retirement <- input$retire_age - input$current_age
-      years_in_retirement <- input$life_exp - input$retire_age
-      
-      monthly_rate <- input$return_rate / 100 / 12
-      total_months <- years_to_retirement * 12
-      
-      # future value of savings
-      fv_current <- input$current_savings * (1 + monthly_rate)^(total_months)
-      
-      # future value of monthly contributions
-      fv_contrib <- input$monthly_savings * (
-        ((1 + monthly_rate)^total_months - 1) / monthly_rate
-      )
-      
-      total_at_retirement <- fv_current + fv_contrib
-      
-      annual_withdrawl_possible <- total_at_retirement / years_in_retirement
-      
-      list(
-        total = total_at_retirement,
-        withdrawl = annual_withdrawl_possible,
-        gap = annual_withdrawl_possible - input$retirement_income,
-        years_to_retirement = years_to_retirement
-      )
-      
-    })
+  
+  calcProjection <- reactive({
     
-    output$summary <- renderText({
-
-      res <- calcProjection()
-      
-      paste0(
-        "Projected savings at retirement: $", round(res$total, 0), "\n",
-        "Estimated annual income available: $", round(res$withdrawl, 0), "\n",
-        "Income gap / surplus: $", round(res$gap, 0)
-      )
-    })
+    years_to_retirement <- input$retire_age - input$current_age
+    years_in_retirement <- input$life_exp - input$retire_age
     
-    output$savingsPlot <- renderPlotly({
-      years = seq(input$current_age, input$retire_age)
-      values = numeric(length(years))
+    total_months <- years_to_retirement * 12
+    monthly_rate <- input$return_rate / 100 / 12
+    
+    fv_current <- fv(
+      pv = -input$current_savings,
+      n = total_months,
+      r = monthly_rate
+    )
+    
+    fv_contrib <- fv.annuity(
+      pmt = -input$monthly_savings,
+      n = total_months,
+      r = monthly_rate
+    )
+    
+    total_at_retirement <- fv_current + fv_contrib
+    
+    annual_withdrawal_possible <- total_at_retirement / years_in_retirement
+    gap <- annual_withdrawal_possible - input$retirement_income
+    
+    list(
+      total = total_at_retirement,
+      withdrawal = annual_withdrawal_possible,
+      gap = gap
+    )
+  })
+  
+  output$summary <- renderText({
+    res <- calcProjection()
+    
+    paste0(
+      "Projected savings at retirement: $", round(res$total, 0), "\n",
+      "Estimated annual income available: $", round(res$withdrawal, 0), "\n",
+      "Income gap / surplus: $", round(res$gap, 0)
+    )
+  })
+  
+  output$savingsPlot <- renderPlotly({
+    
+    total_months <- (input$life_exp - input$current_age) * 12
+    retirement_month <- (input$retire_age - input$current_age) * 12
+    
+    balance <- numeric(total_months)
+    current_balance <- input$current_savings
+    
+    monthly_rate <- input$return_rate / 100 / 12
+    monthly_withdrawal <- input$retirement_income / 12
+    
+    for (m in 1:total_months) {
       
-      target = input$retirement_income * (input$life_exp - input$retire_age)
+      # Apply growth first
+      current_balance <- current_balance * (1 + monthly_rate)
       
-      balance = input$current_savings
-      monthly_rate = input$return_rate / 100 / 12
-      
-      for(i in seq_along(years)) {
-        for(m in 1:12) {
-          balance <- balance * (1 + monthly_rate) + input$monthly_savings
-        }
-        values[i] <- balance
+      if (current_balance <= 0){
+        balance[m] = 0
+        break
       }
       
-      plot_ly(
-        x = years,
-        y = values,
-        type = "scatter",
-        mode = "lines",
-        line = list(color = "blue"),
-        hovertemplate = paste(
-          "Age: %{x}<br>",
-          "Savings: %{y:,.0f}<extra></extra>"
-        )
+      if (m <= retirement_month) {
+        # before retirement → contribute
+        current_balance <- current_balance + input$monthly_savings
+      } else {
+        # after retirement → withdraw
+        current_balance <- current_balance - monthly_withdrawal
+      }
+      
+      balance[m] <- current_balance
+    }
+    
+    ages <- input$current_age + (1:total_months) / 12
+    
+    plot_ly(
+      x = ages,
+      y = balance,
+      type = "scatter",
+      mode = "lines",
+      line = list(color = "blue"),
+      hovertemplate = paste(
+        "Age: %{x:.1f}<br>",
+        "Balance: $%{y:,.0f}<extra></extra>"
+      )
+    ) %>%
+      layout(
+        title = "Savings Lifecycle (Accumulation + Drawdown)",
+        xaxis = list(title = "Age"),
+        yaxis = list(title = "Portfolio Value ($)")
       ) %>%
-        add_lines(y = rep(target, length(years)),
-                  name = "Target Savings",
-                  line = list(color = "red", dash = "dash")) %>%
-        layout(
-          title = "Projected Savings Growth",
-          xaxis = list(title = "Age"),
-          yaxis = list(title = "Savings ($)")
+      layout(
+        shapes = list(
+          type = "line",
+          x0 = input$retire_age,
+          x1 = input$retire_age,
+          y0 = 0,
+          y1 = max(balance),
+          line = list(dash = "dash", color = "red")
         )
-    })
+      )
+  })
 }
 
-# Run the application 
 shinyApp(ui = ui, server = server)
