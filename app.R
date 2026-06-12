@@ -86,6 +86,7 @@ server <- function(input, output) {
   # })
   
   monteCarlo <- reactive({
+    
     sims <- input$simulations
     total_months <- (input$life_exp - input$current_age) * 12
     retirement_month <- (input$retire_age - input$current_age) * 12
@@ -94,12 +95,16 @@ server <- function(input, output) {
     vol <- input$volatility / 100
     
     success <- 0
-    ending_balances <- numeric(sims)
+    
+    # Store full paths
+    paths <- matrix(0, nrow = sims, ncol = total_months)
     
     for (s in 1:sims) {
+      
       balance <- input$current_savings
-      # random monthly returns
+      
       for (m in 1:total_months) {
+        
         monthly_return <- rnorm(
           1,
           mean = mean_return / 12,
@@ -116,36 +121,40 @@ server <- function(input, output) {
         
         if (balance <= 0) {
           balance <- 0
-          break
         }
+        
+        paths[s, m] <- balance
       }
       
-      ending_balances[s] <- balance
-      
-      if (balance > 0) {
-        success <- success + 1
-      }
-      
+      if (balance > 0) success <- success + 1
     }
     
     list(
       success_rate = success / sims,
-      ending_balances = ending_balances
+      ending_balances = paths[, total_months],
+      paths = paths
     )
   })
   
   optimizeSavings <- reactive({
     
     target <- input$target_success / 100
-    test_savings <- input$monthly_savings
-    step <- 100   # increase step size (adjustable)
-    max_iter <- 50
     
-    sims <- max(100, input$simulations)
+    # Search bounds
+    lower <- 0
+    upper <- 10000   # max monthly savings to test
+    
+    tolerance <- 0.005   # 0.5% accuracy in success rate
+    max_iter <- 20       # binary search loops
+    
+    sims <- max(200, input$simulations)  # lower for speed during search
+    
+    best_solution <- NULL
     
     for (i in 1:max_iter) {
       
-      # Run simulation with test savings
+      test_savings <- (lower + upper) / 2
+      
       total_months <- (input$life_exp - input$current_age) * 12
       retirement_month <- (input$retire_age - input$current_age) * 12
       
@@ -159,6 +168,7 @@ server <- function(input, output) {
         balance <- input$current_savings
         
         for (m in 1:total_months) {
+          
           monthly_return <- rnorm(
             1,
             mean = mean_return / 12,
@@ -179,32 +189,78 @@ server <- function(input, output) {
           }
         }
         
-        if(!is.na(balance) && balance > 0) {
-          success <- success + 1
-        }
+        if (balance > 0) success <- success + 1
       }
       
       success_rate <- success / sims
       
-      if (is.na(success_rate) || length(success_rate) == 0) {
-        success_rate <- 0
-      }
-
-      if (success_rate >= target) {
-        return(list(
-          savings = test_savings,
-          success = success_rate
-        ))
+      # Track best result
+      best_solution <- list(
+        savings = test_savings,
+        success = success_rate
+      )
+      
+      # Converged
+      if (abs(success_rate - target) < tolerance) {
+        break
       }
       
-      # Otherwise increase savings
-      test_savings <- test_savings + step
+      # Adjust search range
+      if (success_rate < target) {
+        lower <- test_savings   # need MORE savings
+      } else {
+        upper <- test_savings   # can try LESS savings
+      }
     }
     
-    return(list(
-      savings = NA,
-      success = NA
-    ))
+    # Final validation (optional but recommended)
+    # Run full simulation at chosen savings level
+    final_savings <- best_solution$savings
+    
+    final_mc <- isolate({
+      
+      success <- 0
+      sims_full <- input$simulations
+      
+      total_months <- (input$life_exp - input$current_age) * 12
+      retirement_month <- (input$retire_age - input$current_age) * 12
+      
+      for (s in 1:sims_full) {
+        
+        balance <- input$current_savings
+        
+        for (m in 1:total_months) {
+          
+          monthly_return <- rnorm(
+            1,
+            mean = (input$return_rate / 100) / 12,
+            sd = (input$volatility / 100) / sqrt(12)
+          )
+          
+          balance <- balance * (1 + monthly_return)
+          
+          if (m <= retirement_month) {
+            balance <- balance + final_savings
+          } else {
+            balance <- balance - input$retirement_income / 12
+          }
+          
+          if (balance <= 0) {
+            balance <- 0
+            break
+          }
+        }
+        
+        if (balance > 0) success <- success + 1
+      }
+      
+      success / sims_full
+    })
+    
+    list(
+      savings = final_savings,
+      success = final_mc
+    )
   })
   
   output$summary <- renderText({
@@ -246,61 +302,40 @@ server <- function(input, output) {
   
   output$savingsPlot <- renderPlotly({
     
-    total_months <- (input$life_exp - input$current_age) * 12
-    retirement_month <- (input$retire_age - input$current_age) * 12
+    mc <- monteCarlo()
     
-    balance <- numeric(total_months)
-    current_balance <- input$current_savings
+    paths <- mc$paths
+    ages <- input$current_age + (1:ncol(paths)) / 12
     
-    monthly_rate <- input$return_rate / 100 / 12
-    monthly_withdrawal <- input$retirement_income / 12
-    
-    for (m in 1:total_months) {
-      
-      # Apply growth first
-      current_balance <- current_balance * (1 + monthly_rate)
-      
-      if (current_balance <= 0){
-        balance[m] = 0
-        break
-      }
-      
-      if (m <= retirement_month) {
-        # before retirement → contribute
-        current_balance <- current_balance + input$monthly_savings
-      } else {
-        # after retirement → withdraw
-        current_balance <- current_balance - monthly_withdrawal
-      }
-      balance[m] <- current_balance
-    }
-    
-    ages <- input$current_age + (1:total_months) / 12
+    # median path
+    median_path <- apply(paths, 2, median)
     
     plot_ly(
       x = ages,
-      y = balance,
+      y = median_path,
       type = "scatter",
       mode = "lines",
       line = list(color = "blue"),
+      name = "Median Path",
       hovertemplate = paste(
         "Age: %{x:.1f}<br>",
         "Balance: $%{y:,.0f}<extra></extra>"
       )
     ) %>%
       layout(
-        title = "Savings Lifecycle (Accumulation + Drawdown)",
+        title = "Median Monte Carlo Path",
         xaxis = list(title = "Age"),
-        yaxis = list(title = "Portfolio Value ($)")
-      ) %>%
-      layout(
+        yaxis = list(title = "Portfolio Value ($)"),
+        
         shapes = list(
-          type = "line",
-          x0 = input$retire_age,
-          x1 = input$retire_age,
-          y0 = 0,
-          y1 = max(balance),
-          line = list(dash = "dash", color = "red")
+          list(
+            type = "line",
+            x0 = input$retire_age,
+            x1 = input$retire_age,
+            y0 = 0,
+            y1 = max(median_path, na.rm = TRUE),
+            line = list(color = "red", dash = "dash", width = 2)
+          )
         )
       )
   })
